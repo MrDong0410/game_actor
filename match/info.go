@@ -14,6 +14,10 @@ type MatchInfo struct {
 	MatchID int64
 	// 本地游戏的所有玩家信息
 	Players []*Player
+	// 游戏最大等待用户时间
+	MaxPlayerWaitTime int32
+	// 游戏最长时间
+	MaxGameTime int32
 }
 
 // 游戏玩家

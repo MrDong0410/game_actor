@@ -11,7 +11,7 @@ type Builder func(matchInfo *match.MatchInfo) room.GameRoom
 
 type RoomService struct {
 	Rooms sync.Map
-	
+
 	Builder Builder
 }
 
@@ -46,5 +46,23 @@ func (s *RoomService) DeleteRoom(roomID int64) error {
 		return errors.New("room not exist")
 	}
 	s.Rooms.Delete(roomID)
+	return nil
+}
+
+func (s *RoomService) UserEnterRoom(uid int64, roomID int64) error {
+	gameRoom, ok := s.GetRoom(roomID)
+	if !ok {
+		return errors.New("room not exist")
+	}
+	gameRoom.UserEnterRoom(uid, roomID)
+	return nil
+}
+
+func (s *RoomService) UserLeaveRoom(uid int64, roomID int64) error {
+	gameRoom, ok := s.GetRoom(roomID)
+	if !ok {
+		return errors.New("room not exist")
+	}
+	gameRoom.UserLeaveRoom(uid, roomID)
 	return nil
 }
