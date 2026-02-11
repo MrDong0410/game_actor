@@ -72,31 +72,25 @@ func (r *BaseRoom) Close() {
 }
 
 func (r *BaseRoom) UserEnterRoom(uid int64, roomID int64) {
-	// 玩家已经进入了
-	if _, loaded := r.players.LoadOrStore(uid, true); loaded {
-		return
-	}
-	// 只有初始化状态才能加入(玩家)
-	if r.Status.Load() != RoomStatus_Init {
-		isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
-			return player.PlayerUID == uid
-		})
-		// 不是玩家，直接返回
-		if !isPlayer {
+	// 检查用户是否在匹配列表中
+	isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
+		return player.PlayerUID == uid
+	})
+
+	if isPlayer {
+		// 尝试将用户加入房间
+		// LoadOrStore: 如果键存在，加载并返回 true；如果不存在，存储并返回 false
+		// 如果返回 true (loaded)，说明用户已经在房间里了，直接返回
+		if _, loaded := r.players.LoadOrStore(uid, true); loaded {
 			return
 		}
-		// 游戏玩家
-		_, loaded := r.players.LoadOrStore(uid, true)
-		if loaded {
-			return
-		}
+		// 用户成功加入
 		r.playerNum.Add(1)
-		r.playerEnter(uid)
-		return
 	}
+
 	// 玩家进入了，这里需要通知游戏房玩家进入了
 	for _, opt := range r.option.playerOpts {
-		opt.OnEnter(uid, false)
+		opt.OnEnter(uid, isPlayer)
 	}
 }
 
