@@ -2,15 +2,16 @@ package service
 
 import (
 	"errors"
+	"game_actor/match"
 	"game_actor/room"
 	"sync"
 )
 
-type Builder func() room.GameRoom
+type Builder func(matchInfo *match.MatchInfo) room.GameRoom
 
 type RoomService struct {
 	Rooms sync.Map
-
+	
 	Builder Builder
 }
 
@@ -18,13 +19,16 @@ func NewRoomService() *RoomService {
 	return &RoomService{}
 }
 
-func (s *RoomService) CreateRoom(roomID int64) error {
+func (s *RoomService) CreateRoom(roomID int64, matchInfo *match.MatchInfo) error {
 	_, ok := s.Rooms.Load(roomID)
 	if ok {
 		return errors.New("room already exist")
 	}
-	gameRoom := s.Builder()
-	s.Rooms.Store(roomID, gameRoom)
+	gameRoom := s.Builder(matchInfo)
+	_, ok = s.Rooms.LoadOrStore(roomID, gameRoom)
+	if ok {
+		return errors.New("room already exist")
+	}
 	return nil
 }
 
@@ -34,4 +38,13 @@ func (s *RoomService) GetRoom(roomID int64) (room.GameRoom, bool) {
 		return nil, false
 	}
 	return gameRoom.(room.GameRoom), true
+}
+
+func (s *RoomService) DeleteRoom(roomID int64) error {
+	_, ok := s.Rooms.Load(roomID)
+	if !ok {
+		return errors.New("room not exist")
+	}
+	s.Rooms.Delete(roomID)
+	return nil
 }
