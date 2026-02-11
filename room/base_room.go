@@ -102,17 +102,29 @@ func (r *BaseRoom) UserEnterRoom(uid int64, roomID int64) {
 
 func (r *BaseRoom) UserLeaveRoom(uid int64, roomID int64) {
 	// 实现离开房间的逻辑
-	if _, loaded := r.players.LoadAndDelete(uid); loaded {
-		r.playerNum.Add(-1)
+	// 如果用户不在房间里，直接返回
+	val, loaded := r.players.LoadAndDelete(uid)
+	if !loaded {
+		return
+	}
 
-		isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
+	// 获取用户身份
+	isPlayer, ok := val.(bool)
+	if !ok {
+		// 如果 Map 中存储的不是 bool，兜底重新计算
+		isPlayer = lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
 			return player.PlayerUID == uid
 		})
+	}
 
-		// 玩家离开了，这里需要通知游戏房玩家离开了
-		for _, opt := range r.option.playerOpts {
-			opt.OnLeave(uid, isPlayer)
-		}
+	// 只有玩家离开才减少人数
+	if isPlayer {
+		r.playerNum.Add(-1)
+	}
+
+	// 玩家离开了，这里需要通知游戏房玩家离开了
+	for _, opt := range r.option.playerOpts {
+		opt.OnLeave(uid, isPlayer)
 	}
 }
 
