@@ -45,9 +45,9 @@ func (r *BaseRoom) GetMatchInfo() *match.MatchInfo {
 	return r.matchInfo
 }
 
-// 检查房间是否完整
+// 检查房间是否有玩家
 func (r *BaseRoom) Check() bool {
-	return r.Status.Load() == RoomStatus_Init && r.playerNum.Load() == int32(len(r.matchInfo.Players))
+	return r.Status.Load() == RoomStatus_Init && r.playerNum.Load() > 0
 }
 
 func (r *BaseRoom) Start() bool {
@@ -72,48 +72,45 @@ func (r *BaseRoom) Close() {
 }
 
 func (r *BaseRoom) UserEnterRoom(uid int64, roomID int64) {
-	// 检查用户是否在匹配列表中
-	isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
-		return player.PlayerUID == uid
-	})
-
-	if isPlayer {
-		// 尝试将用户加入房间
-		// LoadOrStore: 如果键存在，加载并返回 true；如果不存在，存储并返回 false
-		// 如果返回 true (loaded)，说明用户已经在房间里了，直接返回
-		if _, loaded := r.players.LoadOrStore(uid, true); loaded {
+	// 玩家已经进入了
+	if _, loaded := r.players.LoadOrStore(uid, true); loaded {
+		return
+	}
+	// 只有初始化状态才能加入(玩家)，初始阶段不能进入观众？
+	if r.Status.Load() != RoomStatus_Init {
+		isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
+			return player.PlayerUID == uid
+		})
+		// 不是玩家，直接返回
+		if !isPlayer {
 			return
 		}
-		// 用户成功加入
+		// 游戏玩家
+		_, loaded := r.players.LoadOrStore(uid, true)
+		if loaded {
+			return
+		}
 		r.playerNum.Add(1)
+		r.playerEnter(uid)
+		return
 	}
-
 	// 玩家进入了，这里需要通知游戏房玩家进入了
 	for _, opt := range r.option.playerOpts {
-		opt.OnEnter(uid, isPlayer)
+		opt.OnEnter(uid, false)
 	}
 }
 
 func (r *BaseRoom) UserLeaveRoom(uid int64, roomID int64) {
-	// 实现离开房间的逻辑
-	// 如果用户不在房间里，直接返回
-	val, loaded := r.players.LoadAndDelete(uid)
-	if !loaded {
-		return
-	}
+	// 判断是否是玩家
+	isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
+		return player.PlayerUID == uid
+	})
 
-	// 获取用户身份
-	isPlayer, ok := val.(bool)
-	if !ok {
-		// 如果 Map 中存储的不是 bool，兜底重新计算
-		isPlayer = lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
-			return player.PlayerUID == uid
-		})
-	}
-
-	// 只有玩家离开才减少人数
+	// 如果是玩家，需要从 map 中移除并减少人数
 	if isPlayer {
-		r.playerNum.Add(-1)
+		if _, loaded := r.players.LoadAndDelete(uid); loaded {
+			r.playerNum.Add(-1)
+		}
 	}
 
 	// 玩家离开了，这里需要通知游戏房玩家离开了
