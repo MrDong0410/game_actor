@@ -27,7 +27,10 @@ func main() {
 		return room.NewRoomActor(roomID, matchInfo)
 	}
 
-	gameNode := node.NewGameNode(config, builder)
+	gameNode, err := node.NewGameNode(config, builder)
+	if err != nil {
+		log.Fatalf("Failed to create game node: %v", err)
+	}
 
 	// Create a demo room for testing
 	demoMatchInfo := &match.MatchInfo{
@@ -35,7 +38,7 @@ func main() {
 		MaxGameTime:       300,
 		Players:           []*match.Player{},
 	}
-	
+
 	if _, err := gameNode.GetRoomService().CreateRoom(1, demoMatchInfo); err != nil {
 		log.Printf("Failed to create demo room: %v", err)
 	} else {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -34,7 +35,7 @@ type GameNode struct {
 	redisClient *redis.Client
 }
 
-func NewGameNode(config *GameNodeConfig, roomBuilder service.Builder) *GameNode {
+func NewGameNode(config *GameNodeConfig, roomBuilder service.Builder) (*GameNode, error) {
 	// Initialize Redis Client if configured
 	var redisClient *redis.Client
 	var kickPublisher service.KickPublisher
@@ -61,11 +62,22 @@ func NewGameNode(config *GameNodeConfig, roomBuilder service.Builder) *GameNode 
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	wsServer := network.NewWSServer(addr)
 
+	// Initialize Etcd Discovery
+	var d discovery.Discovery
+	if len(config.EtcdEndpoints) > 0 {
+		var err error
+		d, err = discovery.NewEtcdDiscovery(config.EtcdEndpoints)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create etcd discovery: %w", err)
+		}
+	}
+
 	node := &GameNode{
 		config:      config,
 		roomSvc:     roomSvc,
 		wsServer:    wsServer,
 		redisClient: redisClient,
+		discovery:   d,
 	}
 
 	// Setup WS handlers
@@ -73,13 +85,15 @@ func NewGameNode(config *GameNodeConfig, roomBuilder service.Builder) *GameNode 
 	wsServer.SetOnConnect(node.handleWSConnect)
 	wsServer.SetOnClose(node.handleWSClose)
 
-	return node
+	return node, nil
 }
 
 func (n *GameNode) Start() error {
 	// 1. Start Redis Subscriber
 	if n.redisClient != nil {
 		go n.subscribeKickChannel()
+		// Also register to Redis for OpenResty discovery
+		go n.registerToRedis()
 	}
 
 	// 2. Start WS Server in a goroutine
@@ -90,28 +104,45 @@ func (n *GameNode) Start() error {
 		}
 	}()
 
-	// 2. Register to Etcd
-	if len(n.config.EtcdEndpoints) > 0 {
-		d, err := discovery.NewEtcdDiscovery(n.config.EtcdEndpoints)
-		if err != nil {
-			return fmt.Errorf("failed to create etcd discovery: %w", err)
-		}
-		n.discovery = d
-
-		// Register service
+	// 3. Register to Etcd
+	if n.discovery != nil {
 		// Address for Nginx to proxy to (e.g., 127.0.0.1:8080)
-		// We might need to register the public IP/Port or internal IP/Port depending on network
-		// Assuming internal IP for Nginx
 		addr := fmt.Sprintf("%s:%d", n.config.Host, n.config.Port)
 		log.Printf("Registering service %s at %s", n.config.ServiceName, addr)
 
 		ctx := context.Background()
-		if err := d.Register(ctx, n.config.ServiceName, addr, n.config.TTL); err != nil {
+		if err := n.discovery.Register(ctx, n.config.ServiceName, addr, n.config.TTL); err != nil {
 			return fmt.Errorf("failed to register service: %w", err)
 		}
 	}
 
 	return nil
+}
+
+func (n *GameNode) registerToRedis() {
+	if n.redisClient == nil {
+		return
+	}
+	// Register self to Redis for OpenResty Dynamic Routing
+	// Key: game:nodes:{node_id} -> Value: host:port
+	key := fmt.Sprintf("game:nodes:%s", n.config.NodeID)
+	value := fmt.Sprintf("%s:%d", n.config.Host, n.config.Port)
+	ttl := time.Duration(n.config.TTL) * time.Second
+
+	ticker := time.NewTicker(ttl / 2)
+	defer ticker.Stop()
+
+	// Initial registration
+	ctx := context.Background()
+	if err := n.redisClient.Set(ctx, key, value, ttl).Err(); err != nil {
+		log.Printf("Failed to register node to Redis: %v", err)
+	}
+
+	for range ticker.C {
+		if err := n.redisClient.Set(ctx, key, value, ttl).Err(); err != nil {
+			log.Printf("Failed to refresh node registration in Redis: %v", err)
+		}
+	}
 }
 
 func (n *GameNode) subscribeKickChannel() {
