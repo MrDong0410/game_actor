@@ -5,27 +5,33 @@ import (
 	"fmt"
 	"game_actor/match"
 	"game_actor/room"
+	"game_actor/session"
 	"sync"
 	"time"
 
 	"github.com/go-co-op/gocron"
 )
 
-type Builder func(matchInfo *match.MatchInfo) room.GameRoom
+type KickPublisher func(uid int64)
+
+type Builder func(roomID int64, matchInfo *match.MatchInfo) room.GameRoom
 
 type RoomService struct {
-	Rooms sync.Map
+	Rooms       sync.Map
+	UserRoomMap sync.Map // uid -> roomID (global tracking for this node)
 
-	Builder   Builder
-	scheduler *gocron.Scheduler
+	Builder       Builder
+	scheduler     *gocron.Scheduler
+	kickPublisher KickPublisher
 }
 
-func NewRoomService(builder Builder) *RoomService {
+func NewRoomService(builder Builder, kickPublisher KickPublisher) *RoomService {
 	s := gocron.NewScheduler(time.UTC)
 	s.StartAsync()
 	return &RoomService{
-		Builder:   builder,
-		scheduler: s,
+		Builder:       builder,
+		scheduler:     s,
+		kickPublisher: kickPublisher,
 	}
 }
 
@@ -34,7 +40,7 @@ func (s *RoomService) CreateRoom(roomID int64, matchInfo *match.MatchInfo) (room
 	if ok {
 		return nil, errors.New("room already exist")
 	}
-	gameRoom := s.Builder(matchInfo)
+	gameRoom := s.Builder(roomID, matchInfo)
 	_, ok = s.Rooms.LoadOrStore(roomID, gameRoom)
 	if ok {
 		return nil, errors.New("room already exist")
@@ -108,12 +114,34 @@ func (s *RoomService) DeleteRoom(roomID int64) error {
 	return s.CloseRoom(roomID)
 }
 
-func (s *RoomService) UserEnterRoom(uid int64, roomID int64) error {
+func (s *RoomService) UserEnterRoom(uid int64, roomID int64, sess session.Session) error {
 	gameRoom, ok := s.GetRoom(roomID)
 	if !ok {
 		return errors.New("room not exist")
 	}
-	gameRoom.UserEnterRoom(uid, roomID)
+
+	// 强制剔除其他频道组
+	// Check if user is already in another room
+	if oldRoomID, loaded := s.UserRoomMap.Load(uid); loaded {
+		oldID := oldRoomID.(int64)
+		if oldID != roomID {
+			// Leave old room
+			if oldRoom, exists := s.GetRoom(oldID); exists {
+				oldRoom.UserLeaveRoom(uid, oldID)
+			}
+			// Update mapping
+			s.UserRoomMap.Store(uid, roomID)
+		}
+	} else {
+		s.UserRoomMap.Store(uid, roomID)
+	}
+
+	// Publish kick message to other nodes
+	if s.kickPublisher != nil {
+		s.kickPublisher(uid)
+	}
+
+	gameRoom.UserEnterRoom(uid, roomID, sess)
 	return nil
 }
 
@@ -123,5 +151,25 @@ func (s *RoomService) UserLeaveRoom(uid int64, roomID int64) error {
 		return errors.New("room not exist")
 	}
 	gameRoom.UserLeaveRoom(uid, roomID)
+
+	// Clean up mapping if it matches
+	if currentRoomID, loaded := s.UserRoomMap.Load(uid); loaded {
+		if currentRoomID.(int64) == roomID {
+			s.UserRoomMap.Delete(uid)
+		}
+	}
 	return nil
+}
+
+func (s *RoomService) KickUser(uid int64) {
+	// Check if user is in any room on this node
+	if roomID, loaded := s.UserRoomMap.Load(uid); loaded {
+		rID := roomID.(int64)
+		if gameRoom, exists := s.GetRoom(rID); exists {
+			// Call KickUser on the room (closes session and leaves)
+			gameRoom.KickUser(uid)
+		}
+		// Clean up mapping
+		s.UserRoomMap.Delete(uid)
+	}
 }

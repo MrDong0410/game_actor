@@ -1,7 +1,9 @@
 package room
 
 import (
+	"fmt"
 	"game_actor/match"
+	"game_actor/session"
 	"sync"
 	"sync/atomic"
 
@@ -19,6 +21,7 @@ type BaseRoom struct {
 	RoomID    int64
 	matchInfo *match.MatchInfo
 	players   sync.Map
+	channels  sync.Map // channelID (string) -> *Channel
 	playerNum atomic.Int32
 
 	option *Option
@@ -71,7 +74,13 @@ func (r *BaseRoom) Close() {
 	}
 }
 
-func (r *BaseRoom) UserEnterRoom(uid int64, roomID int64) {
+func (r *BaseRoom) UserEnterRoom(uid int64, roomID int64, sess session.Session) {
+	// 绑定 Session 到默认频道（RoomID）
+	if sess != nil {
+		channelID := fmt.Sprintf("%d", roomID)
+		r.JoinChannel(channelID, uid, sess)
+	}
+
 	// 玩家已经进入了
 	if _, loaded := r.players.LoadOrStore(uid, true); loaded {
 		return
@@ -100,7 +109,23 @@ func (r *BaseRoom) UserEnterRoom(uid int64, roomID int64) {
 	}
 }
 
+func (r *BaseRoom) KickUser(uid int64) {
+	// 从默认频道获取 Session 并关闭
+	channelID := fmt.Sprintf("%d", r.RoomID)
+	if val, ok := r.channels.Load(channelID); ok {
+		channel := val.(*Channel)
+		if sess, ok := channel.GetSession(uid); ok {
+			sess.Close()
+		}
+	}
+	r.UserLeaveRoom(uid, r.RoomID)
+}
+
 func (r *BaseRoom) UserLeaveRoom(uid int64, roomID int64) {
+	// 移除 Session (默认从 RoomID 频道移除)
+	channelID := fmt.Sprintf("%d", roomID)
+	r.LeaveChannel(channelID, uid)
+
 	// 判断是否是玩家
 	isPlayer := lo.ContainsBy(r.matchInfo.Players, func(player *match.Player) bool {
 		return player.PlayerUID == uid
@@ -116,6 +141,26 @@ func (r *BaseRoom) UserLeaveRoom(uid int64, roomID int64) {
 	// 玩家离开了，这里需要通知游戏房玩家离开了
 	for _, opt := range r.option.playerOpts {
 		opt.OnLeave(uid, isPlayer)
+	}
+}
+
+func (r *BaseRoom) JoinChannel(channelID string, uid int64, sess session.Session) {
+	val, _ := r.channels.LoadOrStore(channelID, NewChannel(channelID))
+	channel := val.(*Channel)
+	channel.Add(uid, sess)
+}
+
+func (r *BaseRoom) LeaveChannel(channelID string, uid int64) {
+	if val, ok := r.channels.Load(channelID); ok {
+		channel := val.(*Channel)
+		channel.Remove(uid)
+	}
+}
+
+func (r *BaseRoom) Broadcast(channelID string, msg []byte) {
+	if val, ok := r.channels.Load(channelID); ok {
+		channel := val.(*Channel)
+		channel.Broadcast(msg)
 	}
 }
 

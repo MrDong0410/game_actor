@@ -2,6 +2,7 @@ package room
 
 import (
 	"game_actor/match"
+	"game_actor/session"
 
 	"github.com/vladopajic/go-actor/actor"
 )
@@ -59,15 +60,21 @@ func (r *RoomActor) SyncInvoke(f func() (any, error)) (any, error) {
 	return <-resultChan, <-errChan
 }
 
-func (r *RoomActor) UserEnterRoom(uid int64, roomID int64) {
+func (r *RoomActor) UserEnterRoom(uid int64, roomID int64, sess session.Session) {
 	r.Invoke(func() {
-		r.BaseRoom.UserEnterRoom(uid, roomID)
+		r.BaseRoom.UserEnterRoom(uid, roomID, sess)
 	})
 }
 
 func (r *RoomActor) UserLeaveRoom(uid int64, roomID int64) {
 	r.Invoke(func() {
 		r.BaseRoom.UserLeaveRoom(uid, roomID)
+	})
+}
+
+func (r *RoomActor) KickUser(uid int64) {
+	r.Invoke(func() {
+		r.BaseRoom.KickUser(uid)
 	})
 }
 
@@ -86,4 +93,22 @@ func (r *RoomActor) Close() {
 
 	// 停止 actor
 	r.actor.Stop()
+}
+
+func (r *RoomActor) Broadcast(channelID string, msg []byte) {
+	r.Invoke(func() {
+		r.BaseRoom.Broadcast(channelID, msg)
+	})
+}
+
+func (r *RoomActor) JoinChannel(channelID string, uid int64, sess session.Session) {
+	r.Invoke(func() {
+		r.BaseRoom.JoinChannel(channelID, uid, sess)
+	})
+}
+
+func (r *RoomActor) LeaveChannel(channelID string, uid int64) {
+	r.Invoke(func() {
+		r.BaseRoom.LeaveChannel(channelID, uid)
+	})
 }
